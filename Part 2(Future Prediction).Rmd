@@ -1,0 +1,169 @@
+---
+title: "DSA5206 Project Part 2"
+author: "Wu Shangzhe/A0194505A"
+date: "2024-04-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+setwd("J:\\DSA5206 Project") # Adjust the library
+library(tseries)
+library(itsmr)
+library(tidyverse)
+library(aTSA)
+library(MASS)
+source("Supplementary functions.R")
+```
+
+## Introduction to Time Series
+
+```{r}
+# The dataset is Bangladesh Weather Dataset. (n.d.). 
+# Retrieved from kaggle: https://www.kaggle.com/yakinrubaiat/bangladesh-weather-dataset
+
+bw <- read.csv("data/Temp_and_rain.csv")
+bwt <- bw$tem
+
+# We choose the latest 20 years' data as train & test data
+bwt.train <- bwt[1141:1360]
+bwt.test <- bwt[1361:1380]
+
+plotc(bwt.train) # We can clearly see a seasonal pattern
+```
+
+### SARIMA Model 
+
+```{r}
+# Remove seasonality & trend by differencing
+dx <- diff(bwt.train)
+ddx <- diff(dx, lag=12)
+plotc(ddx) # Seems good
+abline(h=0)
+```
+
+
+## Subset MA model 
+```{r}
+y <- ddx
+n <- length(ddx)
+
+acf(ddx, lag.max=60) # Suggest an MA(13) model or q=1, Q=1 for SARIMA
+```
+
+```{r}
+# Fit a subset MA(13) model based on ACF plot
+fm3 <- arima(y, order=c(0,0,13), include.mean=FALSE)
+k <- 13
+aicc.ma13 <- -2*fm3$loglik + 2*(k+1)*n/(n-k-2)
+
+aicc.ma13 # 454.8016
+
+# Set some coefficients to 0
+cf <- fm3$coef
+cf.se <- sqrt(diag(fm3$var.coef))
+abs.ratio <- abs(cf/cf.se)
+sort(abs.ratio)
+constrain <- which(abs.ratio < 1.25)
+
+# Subset MA(13)
+fixed <- rep(NA, 13)
+fixed[constrain] <- 0
+fm4 <- arima(y, order=c(0,0,13), include.mean=FALSE, fixed=fixed)
+k <- 3
+n <- length(y)
+aicc.s.ma13 <- -2*fm4$loglik + 2*(k+1)*n/(n-k-2)
+aicc.s.ma13 # 440.0872
+
+fm4$coef
+fm4$sigma2
+```
+
+```{r}
+# Diagnostic checking for Subset MA(13)
+What <- fm4$residuals
+Rhat <- What/sqrt(fm4$sigma2)
+plotc(Rhat)
+abline(h=0)
+acf(Rhat, lag.max=40) # Only lag=0 exceed the bounds
+test(Rhat) # pass all tests
+```
+
+## 
+```{r}
+# Fit SARIMA
+fm1 <- arima(y, order = c(0,0,1), seasonal = list(order=c(0,0,1), period=12),include.mean=FALSE)
+k <- 0+1+1+0
+aicc.sarima <- -2*fm1$loglik + 2*(k+1)*n/(n-k-2)
+aicc.sarima # 438.1184
+```
+```{r}
+# Diagnostic checking for SARIMA(0,0,1)x(0,0,1)_12
+What <- fm1$residuals
+Rhat <- What/sqrt(fm1$sigma2)
+plotc(Rhat)
+abline(h=0)
+acf(Rhat, lag.max=40) # Only lag=0 exceed the bounds
+test(Rhat) # pass all tests
+minAICC(What, m=26, method="yw") # min.order=1
+```
+
+```{r}
+# Since minAICC gives min.order=1, we fit a SARIMA(1,0,1)x(0,0,1)_12
+fm2 <- arima(y, order = c(1,0,1), seasonal = list(order=c(0,0,1), period=12),include.mean=FALSE)
+
+n <- length(y)
+k <- 1+1+1+0
+aicc.sarima2 <- -2*fm2$loglik + 2*(k+1)*n/(n-k-2)
+aicc.sarima2 # 433.653
+```
+
+```{r}
+# Diagnostic checking for SARIMA(1,0,1)x(0,0,1)_12
+What <- fm2$residuals
+Rhat <- What/sqrt(fm2$sigma2)
+plotc(Rhat)
+abline(h=0)
+acf(Rhat, lag.max=40) # Only lag=0 exceed the bounds
+test(Rhat) # pass all tests
+minAICC(What, m=26, method="yw") # min.order=0
+```
+
+# Forecasting using SARIMA(1,0,1)X(0,0,1)_12
+
+```{r}
+out <- hstep_pred_SARIMA(x=bwt.train, y=y, fm=fm2, mu=0, d=1, D=1, s=12, H=20)
+pred <- rep(NA, 20)
+min <- rep(NA, 20)
+max <- rep(NA, 20)
+
+
+for (i in 1:20){
+  se = sqrt(out$mse[i])
+  
+  pred[i] = out$pX[i]
+  min[i] = out$pX[i] - 1.96*se
+  max[i] = out$pX[i] + 1.96*se
+}
+
+
+df1 <- data.frame("Lags" = seq(1,20, by=1), "Actual Value"=bwt.test,"Predicted value"=pred, "95% CI Lower bound" = min, "95% CI Upper bound" = max)
+df1
+
+```
+
+```{r}
+library(ggplot2)
+
+# Corrected plot code
+ggplot(data = df1, aes(x = Lags)) +
+  geom_line(aes(y = Actual.Value, color = "Actual Value")) +
+  geom_point(aes(y = Actual.Value, color = "Actual Value")) +
+  geom_line(aes(y = Predicted.value, color = "Predicted Value")) +
+  geom_point(aes(y = Predicted.value, color = "Predicted Value")) +
+  scale_color_manual(values = c("Actual Value" = "red", "Predicted Value" = "blue")) +
+  labs(title = "Predicted vs Actual Values Over Lags", x = "Lags", y = "Value") +
+  theme_minimal() +
+  ylim(15, 30)
+
+```
